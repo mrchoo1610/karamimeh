@@ -128,6 +128,21 @@ public class SessionMuterTests
         toneOut = null!;
         device = null!;
 
+        // BUG FIX (found via a real, ~14-minute-stuck GitHub Actions run — not anticipated when
+        // this test was first written): GitHub's windows-latest runners sometimes report a
+        // "default" render device that enumerates successfully but isn't backed by real audio
+        // hardware — WasapiOut.Init()/Play() against it can hang instead of throwing a catchable
+        // exception, unlike a machine with genuinely NO device (which fails cleanly at
+        // GetDefaultAudioEndpoint, already handled below). Bail out before touching any real audio
+        // API at all when running under CI. GitHub Actions always sets both CI=true and
+        // GITHUB_ACTIONS=true; check both since other CI systems only set one or the other.
+        bool isCi = Environment.GetEnvironmentVariable("CI") is not null
+            || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") is not null;
+        if (isCi)
+        {
+            return false;
+        }
+
         try
         {
             var enumerator = new MMDeviceEnumerator();

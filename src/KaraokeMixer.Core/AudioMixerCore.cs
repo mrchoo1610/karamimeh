@@ -6,10 +6,8 @@ using NAudio.Wave.SampleProviders;
 
 namespace KaraokeMixer.Core;
 
-/// <summary>Result of a <see cref="AudioMixerCore.StartAsync"/> call — mirrors the
-/// "always return, never throw for known failure HRESULTs" contract ProcessLoopbackSpike's
-/// CaptureStartResult used, so a caller (KaraokeMixer.App) always gets an actionable stage/detail
-/// instead of a bare exception.</summary>
+/// <summary>Result of a <see cref="AudioMixerCore.StartAsync"/> call — a caller (KaraokeMixer.App)
+/// always gets an actionable stage/detail instead of a bare exception.</summary>
 public sealed record EngineStartResult(bool Success, string Stage, string? Detail)
 {
     public static EngineStartResult Ok() => new(true, "StartAsync", null);
@@ -24,62 +22,82 @@ public sealed record EngineStartResult(bool Success, string Stage, string? Detai
 public sealed record MicDeviceInfo(string Id, string Name);
 
 /// <summary>
-/// Wires the full karamimeh DSP pipeline together and owns its lifetime:
+/// Wires the karamimeh audio pipeline together and owns its lifetime:
 ///
 /// <code>
 /// Mic (WASAPI capture, chosen or default device)
-///   → Mono → EQ 3-band → Echo → back to Stereo → Mic Volume ──┐
-///                                                              ├─→ MixingSampleProvider → SoftClip → PeakMeter(master) → WasapiOut
-/// YouTube (WebView2 process-loopback capture, session muted) → Music Volume ──┘
+///   → Mono → EQ 3-band → Echo → back to Stereo → Mic Volume → normalize → SoftClip → PeakMeter → WasapiOut
+///
+/// YouTube (WebView2): NOT captured. Plays natively, unmodified, on the system's default output
+/// device. "Music Volume" instead drives that process tree's own Windows Audio session Volume
+/// directly (via SessionMuter). Windows' Shared-mode audio engine mixes the two streams together
+/// on its own — see the big [ARCHITECTURE CHANGE] comment below for why.
 /// </code>
 ///
-/// Both branches are normalized (resampled to the exact format WasapiOut's target device expects)
-/// via <see cref="AudioFormatHelper.NormalizeToFormat"/> before reaching the mixer, since
-/// <c>MixingSampleProvider</c> requires all its inputs to share one exact <see cref="WaveFormat"/>.
-///
-/// Deliberately out of scope for this pass (see the karamimeh build task): acoustic-feedback
-/// suppression (notch-filter auto-detection) and Reverb/Freeverb. Both are plain omissions here,
-/// not stubs, so there is nothing half-wired to trip over.
+/// Deliberately out of scope for this pass: acoustic-feedback suppression (notch-filter
+/// auto-detection) and Reverb/Freeverb. Both are plain omissions here, not stubs, so there is
+/// nothing half-wired to trip over.
 /// </summary>
+/// <remarks>
+/// [ARCHITECTURE CHANGE, 2026-09-24] This class used to also run a process-loopback capture of the
+/// WebView2/YouTube process (<c>ProcessLoopbackCapture</c>, still present in
+/// <c>Audio/ProcessLoopbackCapture.cs</c> and fully working as a standalone mechanism — see
+/// <c>spike/ProcessLoopbackSpike</c>), muting/zeroing that process's own session so the captured
+/// copy could be re-mixed in software alongside the mic and sent to a single chosen output device.
+///
+/// That approach was abandoned after a real user's machine showed: no matter whether the YouTube
+/// session was silenced via <c>Mute=true</c> OR <c>Volume=0</c>, the process-loopback capture
+/// received EXACTLY ZERO bytes for the entire session (not "silent packets" — no packets at all),
+/// while un-muting/raising volume immediately restored the native (uncaptured) YouTube sound. The
+/// most coherent explanation (not confirmed against Chromium source — [Unverified]): Chromium
+/// itself, on observing its own session go silent by either mechanism, stops actually rendering
+/// audio at all as a CPU-saving optimization — starving anyone's loopback tap, not just muting the
+/// user's ears. No reliable way was found to keep Chromium rendering while also silencing its
+/// native output.
+///
+/// Given the original DSP design never applied EQ/Echo to the music branch anyway (only mic got
+/// those), capturing YouTube's audio in software bought nothing except a "Music Volume" slider and
+/// a single unified output device — both of which are achieved more simply, more robustly, and with
+/// zero extra latency by NOT capturing at all: let YouTube play natively (Windows mixes multiple
+/// apps' Shared-mode streams on the same device automatically — that is what Shared mode IS), send
+/// only the mic chain through this engine's own WasapiOut on that same device, and drive "Music
+/// Volume" by adjusting the YouTube process's own Windows session Volume directly (see
+/// <see cref="MusicVolume"/> / <see cref="SessionMuter"/>). This also eliminates the entire
+/// GC/COM-RCW fragility that process-loopback activation required (see the git history of this file
+/// and <c>ProcessLoopbackCapture.cs</c>'s doc comments for that saga) — there is no longer any
+/// forced <c>GC.Collect()</c> anywhere in this class, because there is no longer any
+/// <c>ActivateAudioInterfaceAsync</c>-based COM object whose release timing matters.
+///
+/// Trade-off: the mic's own output device (chosen or default) MUST be the same physical device
+/// WebView2/YouTube is playing on for the user to hear both mixed together — WebView2 follows
+/// Windows' system default render device, so if the caller explicitly picks a non-default output
+/// device for this engine, YouTube may keep playing on a different device than the mic. The caller
+/// (KaraokeMixer.App) surfaces a warning for that case rather than this class silently overriding
+/// the caller's explicit device choice.
+/// </remarks>
 public sealed class AudioMixerCore : IDisposable
 {
     private MMDeviceEnumerator? _deviceEnumerator;
     private CaptureSource? _micCapture;
-    private ProcessLoopbackCapture? _youtubeCapture;
     private WasapiOut? _output;
 
     private ThreeBandEqSampleProvider? _micEq;
     private EchoSampleProvider? _micEcho;
     private VolumeSampleProvider? _micVolumeProvider;
-    private VolumeSampleProvider? _musicVolumeProvider;
     private PeakMeterSampleProvider? _micPeakMeter;
-    private PeakMeterSampleProvider? _musicPeakMeter;
     private PeakMeterSampleProvider? _masterPeakMeter;
 
-    private uint _mutedBrowserProcessId;
+    private uint _targetBrowserProcessId;
+    private float _musicVolume = 0.85f;
 
     public bool IsRunning { get; private set; }
 
-    /// <summary>How many audio sessions were actually found and muted on the last
-    /// <see cref="StartAsync"/> call (0 does not necessarily mean failure — Windows only creates a
-    /// session for a process after it has rendered audio at least once, so a cold start where the
-    /// video hasn't played yet will legitimately show 0 here). Exposed so the UI can log/diagnose
-    /// "why do I still hear YouTube twice" reports precisely instead of guessing.</summary>
-    public int LastMuteMatchedCount { get; private set; }
-
-    /// <summary>Total bytes the YouTube process-loopback capture loop has actually pulled via
-    /// GetBuffer/ReleaseBuffer (includes WASAPI-reported-silent bytes) — a non-zero, growing value
-    /// proves the native capture loop is really running and receiving packets, independent of
-    /// whether the audio itself is silent. 0 forever means the capture loop/thread isn't producing
-    /// packets at all (a different bug class than "producing silence").</summary>
-    public long YoutubeTotalBytesCaptured => _youtubeCapture?.TotalBytesCaptured ?? 0;
-
-    /// <summary>Of <see cref="YoutubeTotalBytesCaptured"/>, how many bytes WASAPI itself flagged
-    /// with AUDCLNT_BUFFERFLAGS_SILENT (Windows' own "this is silence" determination, not something
-    /// this app computed from sample values). If this tracks equal to the total, Windows believes
-    /// the captured process is rendering silence — a very different root cause than the capture
-    /// loop simply not running.</summary>
-    public long YoutubeSilentBytesCaptured => _youtubeCapture?.SilentBytesCaptured ?? 0;
+    /// <summary>How many Windows Audio sessions matched the WebView2 process tree on the last
+    /// <see cref="StartAsync"/>/<see cref="MusicVolume"/> call (0 does not necessarily mean failure
+    /// — Windows only creates a session for a process after it has rendered audio at least once, so
+    /// a cold start where the video hasn't played yet will legitimately show 0 here until the first
+    /// video actually starts playing).</summary>
+    public int LastMusicSessionMatchedCount { get; private set; }
 
     // --- Live-adjustable parameters -------------------------------------------------------
 
@@ -95,14 +113,24 @@ public sealed class AudioMixerCore : IDisposable
         }
     }
 
+    /// <summary>Drives the YouTube/WebView2 process tree's own Windows Audio session Volume
+    /// directly (0.0–1.0 — the real range Windows sessions support, unlike <see cref="MicVolume"/>
+    /// which is a software gain that can exceed 1.0). See the class remarks for why there is no
+    /// software music branch to control instead. Safe to set before <see cref="StartAsync"/> has
+    /// been called (or after <see cref="Stop"/>) — it just updates the stored value, applied the
+    /// next time a target process is known.</summary>
     public float MusicVolume
     {
-        get => _musicVolumeProvider?.Volume ?? 1f;
+        get => _musicVolume;
         set
         {
-            if (_musicVolumeProvider is not null)
+            _musicVolume = Math.Clamp(value, 0f, 1f);
+
+            if (_targetBrowserProcessId != 0)
             {
-                _musicVolumeProvider.Volume = Math.Clamp(value, 0f, 2f);
+                var pids = ProcessTreeHelper.GetProcessTreePids(_targetBrowserProcessId);
+                var result = SessionMuter.SetVolumeForProcessTree(pids, _musicVolume);
+                LastMusicSessionMatchedCount = result.MatchedPids.Count;
             }
         }
     }
@@ -195,14 +223,10 @@ public sealed class AudioMixerCore : IDisposable
     /// actually arriving from the microphone regardless of volume/EQ/echo settings.</summary>
     public float MicPeakLevel => _micPeakMeter?.CurrentPeak ?? 0f;
 
-    /// <summary>Raw YouTube (process-loopback) capture peak level (0..~1), tapped right after the
-    /// music volume control — so it reads non-zero only when real captured audio is flowing,
-    /// independent of the mic or the master output. Added specifically to answer "is the capture
-    /// producing anything at all" without guessing.</summary>
-    public float MusicPeakLevel => _musicPeakMeter?.CurrentPeak ?? 0f;
-
     /// <summary>Post-SoftClip master output peak level (0..1) — what's actually being sent to
-    /// WasapiOut.</summary>
+    /// WasapiOut. Note this reflects the MIC branch only now (see class remarks) — it will read 0
+    /// even while YouTube is audibly playing, since that audio no longer passes through this
+    /// engine's graph at all.</summary>
     public float MasterPeakLevel => _masterPeakMeter?.CurrentPeak ?? 0f;
 
     /// <summary>Enumerates available microphone (capture) devices for a UI device picker.
@@ -237,15 +261,14 @@ public sealed class AudioMixerCore : IDisposable
         }
         catch (Exception)
         {
-            // No default capture device present (or no mic at all) — not fatal, caller can still
-            // let the user pick explicitly or simply have no mic input.
             return null;
         }
     }
 
     /// <summary>Enumerates available output (render) devices — speakers, headphones, a Bluetooth
-    /// dongle, etc. — for a UI device picker. Same "never hardcode/assume a device" rationale as
-    /// <see cref="EnumerateMicDevices"/>: the user may switch between AUX and Bluetooth output.</summary>
+    /// dongle, etc. — for a UI device picker. See the class remarks: picking a non-default device
+    /// here only affects where THIS engine's mic output plays, not where WebView2/YouTube plays
+    /// (that always follows the Windows system default).</summary>
     public static IReadOnlyList<MicDeviceInfo> EnumerateOutputDevices()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -280,16 +303,18 @@ public sealed class AudioMixerCore : IDisposable
     }
 
     /// <summary>
-    /// Starts the full pipeline: opens the chosen (or default) microphone, starts process-loopback
-    /// capture of the given WebView2 browser process, mutes that process's own audio session (so
-    /// YouTube doesn't play twice — once natively, once through this app's mixed output), builds
-    /// the DSP graph, and starts playback on the default render device.
+    /// Starts the mic pipeline (opens the chosen or default microphone, builds the EQ/Echo/Volume
+    /// DSP chain, starts playback on the chosen or default render device) and applies the current
+    /// <see cref="MusicVolume"/> to the YouTube/WebView2 process tree's own Windows session. Does
+    /// NOT capture or touch YouTube's audio otherwise — see class remarks.
     /// </summary>
     /// <param name="micDeviceId">MMDevice ID from <see cref="EnumerateMicDevices"/>, or null for
     /// the system default recording device.</param>
-    /// <param name="browserProcessId">CoreWebView2.BrowserProcessId of the embedded WebView2.</param>
+    /// <param name="browserProcessId">CoreWebView2.BrowserProcessId of the embedded WebView2 — used
+    /// only to find its Windows session for <see cref="MusicVolume"/>, never for capture.</param>
     /// <param name="outputDeviceId">MMDevice ID from <see cref="EnumerateOutputDevices"/>, or null
-    /// for the system default playback device.</param>
+    /// for the system default playback device. Should normally be left null/default so the mic
+    /// output lands on the same device WebView2 is using — see class remarks.</param>
     public async Task<EngineStartResult> StartAsync(string? micDeviceId, uint browserProcessId, string? outputDeviceId = null)
     {
         if (IsRunning)
@@ -322,10 +347,10 @@ public sealed class AudioMixerCore : IDisposable
             _ = ex; // original device-specific failure isn't fatal, just falls back silently
         }
 
-        // BUG FIX: AudioClient.MixFormat is frequently WaveFormatExtensible in practice (confirmed
-        // with a real "Speakers (Creative BT-W6)" device) — passing that straight into
-        // MediaFoundationResampler throws "Unsupported source encoding". See ToResamplerSafeFormat's
-        // doc comment for the full explanation.
+        // BUG FIX (still applies, unrelated to the capture removal): AudioClient.MixFormat is
+        // frequently WaveFormatExtensible in practice (confirmed with a real "Speakers (Creative
+        // BT-W6)" device) — passing that straight into MediaFoundationResampler throws "Unsupported
+        // source encoding". See ToResamplerSafeFormat's doc comment for the full explanation.
         WaveFormat targetFormat = AudioFormatHelper.ToResamplerSafeFormat(renderDevice.AudioClient.MixFormat);
 
         // --- Mic capture ----------------------------------------------------------------
@@ -339,8 +364,8 @@ public sealed class AudioMixerCore : IDisposable
             catch (Exception)
             {
                 // Requested device no longer present (unplugged since the picker was populated,
-                // e.g. the user's broken wired headset or a Bluetooth dongle dropping out) — fall
-                // back to the system default rather than failing the whole engine start.
+                // e.g. a broken wired headset or a Bluetooth dongle dropping out) — fall back to
+                // the system default rather than failing the whole engine start.
                 micDevice = null;
             }
         }
@@ -349,8 +374,8 @@ public sealed class AudioMixerCore : IDisposable
         {
             _micCapture = new CaptureSource(micDevice);
             // BUG FIX: CaptureSource opens the device but never actually records until Start() is
-            // called — this line was missing entirely in the first pass, meaning the engine could
-            // "succeed" and play YouTube while silently never producing any mic audio at all.
+            // called — missing entirely in an earlier pass, meaning the engine could "succeed" while
+            // silently never producing any mic audio at all.
             _micCapture.Start();
         }
         catch (Exception ex)
@@ -359,63 +384,13 @@ public sealed class AudioMixerCore : IDisposable
             return Fail("CaptureSource (mic WASAPI capture open)", ex.Message);
         }
 
-        // Defensive: same forced-GC fix as Stop() (see the big comment on that method for the full
-        // rationale/evidence). Belt-and-suspenders — covers the case where a previous Stop() didn't
-        // run cleanly (e.g. an exception mid-teardown) or some other still-live reference to a prior
-        // ProcessLoopbackCapture's COM RCWs is keeping mmdevapi.dll from considering the previous
-        // client for this (loopback source, target process) pair as released. Cheap relative to a
-        // failed Start.
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
-
-        // --- YouTube process-loopback capture --------------------------------------------
-        _youtubeCapture = new ProcessLoopbackCapture();
-        var loopbackResult = await _youtubeCapture.StartAsync(browserProcessId);
-        if (!loopbackResult.Success)
-        {
-            CleanupPartialStart();
-            return Fail($"ProcessLoopbackCapture.StartAsync [{loopbackResult.Stage}]", $"HRESULT={loopbackResult.HResultHex}: {loopbackResult.Detail}");
-        }
-
-        // "Mute" the WebView2 process tree's own audio session at the OS level so the user doesn't
-        // hear YouTube twice (once natively from WebView2, once through this app's mixed output).
-        // NOTE: despite the name, SetMuteForProcessTree(mute: true) no longer sets the Windows
-        // Audio session's Mute flag — it sets Volume=0 instead (Mute stays false). See the big
-        // comment on SessionMuter.SetMuteForProcessTree for why: a real user's session showed
-        // YoutubeTotalBytesCaptured stuck at exactly 0 for the whole session while this call had
-        // Mute=true set, and manually un-muting in Windows' Volume Mixer made bytes start flowing
-        // immediately — Mute=true appears to make the captured process (very likely Chromium itself,
-        // reacting to its own session-mute notification as a CPU-saving optimization — not confirmed
-        // from Chromium source, flagged [Unverified]) stop actually rendering any audio at all, which
-        // starves the process-loopback tap of packets too, not just of audible output.
-        _mutedBrowserProcessId = browserProcessId;
+        // Apply the current Music Volume to the YouTube process tree's own session (does nothing
+        // fatal if no session exists yet — see MusicVolume's doc comment and SessionMuter).
+        _targetBrowserProcessId = browserProcessId;
         var pids = ProcessTreeHelper.GetProcessTreePids(browserProcessId);
-        var muteResult = SessionMuter.SetMuteForProcessTree(pids, mute: true);
-        LastMuteMatchedCount = muteResult.MatchedPids.Count;
-        if (!muteResult.Success)
-        {
-            // Non-fatal — Windows Audio only creates a session for a process after it has actually
-            // rendered audio at least once (same caveat as the spike), so this can legitimately
-            // fail to find a session yet on a cold start. Proceed; the user will simply hear
-            // YouTube twice until a session appears and the app (or the user, via the UI) retries
-            // the mute. Do not fail the whole engine over this.
-        }
+        var volumeResult = SessionMuter.SetVolumeForProcessTree(pids, _musicVolume);
+        LastMusicSessionMatchedCount = volumeResult.MatchedPids.Count;
 
-        // BUG FIX: everything from here down (DSP graph construction) used to run with no
-        // surrounding try/catch. A real repro (MediaFoundationResampler throwing "Unsupported
-        // source encoding" — see ToResamplerSafeFormat) showed this is a serious problem beyond
-        // just that one exception: ANY exception thrown in this section skipped
-        // CleanupPartialStart() entirely, leaking the just-opened mic capture AND — critically —
-        // the just-SUCCEEDED ProcessLoopbackCapture (which by this point holds a live, muted
-        // process-loopback client against browserProcessId, never stopped/disposed). Every
-        // subsequent Start attempt then created a brand new ProcessLoopbackCapture against the
-        // SAME target process while the leaked one was still alive, hitting the well-known
-        // 0x8000FFFF activation failure (see Stop()'s big comment) — except worse than the
-        // documented "Start/Stop cycle" case, since Stop() (and its mandatory GC fix) was never
-        // even called for the leaked instance. Confirmed from a real user's debug log: attempt 1
-        // failed with "Unsupported source encoding" (leaking a live capture), attempt 2 immediately
-        // failed with 0x8000FFFF, and every attempt after kept compounding the same leak.
         try
         {
             // --- Mic DSP chain: Mono → EQ → Echo → back to Stereo → Volume → normalize --------
@@ -442,18 +417,8 @@ public sealed class AudioMixerCore : IDisposable
             _micVolumeProvider = new VolumeSampleProvider(micChain) { Volume = 1.0f };
             ISampleProvider normalizedMic = AudioFormatHelper.NormalizeToFormat(_micVolumeProvider, targetFormat);
 
-            // --- Music (YouTube) chain: Volume → PeakMeter (diagnostic tap) → normalize ------
-            ISampleProvider youtubeChain = _youtubeCapture.Buffer.ToSampleProvider();
-            _musicVolumeProvider = new VolumeSampleProvider(youtubeChain) { Volume = 0.85f };
-            _musicPeakMeter = new PeakMeterSampleProvider(_musicVolumeProvider);
-            ISampleProvider normalizedMusic = AudioFormatHelper.NormalizeToFormat(_musicPeakMeter, targetFormat);
-
-            // --- Mixer → SoftClip → master PeakMeter → output --------------------------------
-            var mixer = new MixingSampleProvider(targetFormat);
-            mixer.AddMixerInput(normalizedMic);
-            mixer.AddMixerInput(normalizedMusic);
-
-            var softClip = new SoftClipSampleProvider(mixer);
+            // --- SoftClip → master PeakMeter → output --------------------------------
+            var softClip = new SoftClipSampleProvider(normalizedMic);
             _masterPeakMeter = new PeakMeterSampleProvider(softClip);
 
             return StartOutput();
@@ -470,7 +435,7 @@ public sealed class AudioMixerCore : IDisposable
         try
         {
             _output = new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 40);
-            _output.Init(_masterPeakMeter.ToWaveProvider());
+            _output.Init(_masterPeakMeter!.ToWaveProvider());
             _output.Play();
         }
         catch (Exception ex)
@@ -500,31 +465,11 @@ public sealed class AudioMixerCore : IDisposable
         _output?.Dispose();
         _output = null;
 
-        _youtubeCapture?.Stop();
-        _youtubeCapture?.Dispose();
-        _youtubeCapture = null;
-
         _micCapture?.Stop();
         _micCapture?.Dispose();
         _micCapture = null;
 
-        // BUG FIX: mute happens BEFORE the DSP-graph try/catch (see StartAsync), so a failure in
-        // that section previously left the WebView2 process tree permanently muted with no way to
-        // recover short of restarting the app. Unmute here too, same as Stop().
-        if (_mutedBrowserProcessId != 0)
-        {
-            try
-            {
-                var pids = ProcessTreeHelper.GetProcessTreePids(_mutedBrowserProcessId);
-                SessionMuter.SetMuteForProcessTree(pids, mute: false);
-            }
-            catch (Exception)
-            {
-                // Best-effort — not worth failing cleanup over.
-            }
-
-            _mutedBrowserProcessId = 0;
-        }
+        RestoreMusicVolumeIfNeeded();
 
         _deviceEnumerator?.Dispose();
         _deviceEnumerator = null;
@@ -532,25 +477,12 @@ public sealed class AudioMixerCore : IDisposable
         _micEq = null;
         _micEcho = null;
         _micVolumeProvider = null;
-        _musicVolumeProvider = null;
         _micPeakMeter = null;
-        _musicPeakMeter = null;
         _masterPeakMeter = null;
-
-        // BUG FIX: same mandatory GC fix as Stop() (see that method's big comment for the full
-        // rationale/evidence) — this path disposes the exact same kind of ProcessLoopbackCapture
-        // COM objects, so it needs the exact same forced collection to actually release them at the
-        // native (mmdevapi.dll) level, not just dispose the managed wrapper. A real repro showed
-        // this path being hit repeatedly (via the DSP-graph exception above) with NO GC step,
-        // compounding leaked native loopback clients across every failed attempt.
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
     }
 
     /// <summary>
-    /// Stops playback and both capture sources, unmutes the WebView2 process tree, and tears down
-    /// the DSP graph.
+    /// Stops mic capture/playback and restores the YouTube process tree's original session volume.
     /// </summary>
     public void Stop()
     {
@@ -583,33 +515,7 @@ public sealed class AudioMixerCore : IDisposable
         _micCapture?.Dispose();
         _micCapture = null;
 
-        try
-        {
-            _youtubeCapture?.Stop();
-        }
-        catch (Exception)
-        {
-            // Non-fatal.
-        }
-
-        _youtubeCapture?.Dispose();
-        _youtubeCapture = null;
-
-        if (_mutedBrowserProcessId != 0)
-        {
-            try
-            {
-                var pids = ProcessTreeHelper.GetProcessTreePids(_mutedBrowserProcessId);
-                SessionMuter.SetMuteForProcessTree(pids, mute: false);
-            }
-            catch (Exception)
-            {
-                // Best-effort unmute — if this fails the user can still unmute the tab/app
-                // manually; not worth failing Stop() over.
-            }
-
-            _mutedBrowserProcessId = 0;
-        }
+        RestoreMusicVolumeIfNeeded();
 
         _deviceEnumerator?.Dispose();
         _deviceEnumerator = null;
@@ -617,44 +523,31 @@ public sealed class AudioMixerCore : IDisposable
         _micEq = null;
         _micEcho = null;
         _micVolumeProvider = null;
-        _musicVolumeProvider = null;
         _micPeakMeter = null;
-        _musicPeakMeter = null;
         _masterPeakMeter = null;
 
         IsRunning = false;
+    }
 
-        // *** MANDATORY — DO NOT REMOVE OR "CLEAN UP" THIS BLOCK ***
-        //
-        // Ported as-is (same fix, same rationale) from
-        // spike/ProcessLoopbackSpike/MainWindow.xaml.cs's StopCaptureAndPlayback(). This is a
-        // confirmed, hard-won fix for a real, 100%-reproducible bug: without it,
-        // ProcessLoopbackCapture.StartAsync() fails with HRESULT 0x8000FFFF (then 0x88890021 on
-        // the fallback Initialize attempt) on every Start() after the first — reproduced 100% and
-        // fixed 100% across 7+ independent test runs in the spike (3 timing-only repro runs: 18/18
-        // start/stop cycles succeeded with the fix vs. 4/24 without it; 4 repro runs using real
-        // YouTube navigation: all 4 succeeded on the very first Start attempt after navigating,
-        // vs. 0/7 attempts succeeding without the fix in the same scenario). See
-        // spike/ProcessLoopbackSpike/README.md, section "Phát hiện quan trọng", for the full
-        // experimental evidence.
-        //
-        // Root cause (best available explanation from the spike's investigation — NOT fully proven
-        // at the object level, carried forward here as still [Unverified] at that level of detail):
-        // at least one COM RCW (runtime-callable wrapper) obtained via ActivateAudioInterfaceAsync
-        // only calls Release() down to mmdevapi.dll when the CLR finalizes it via GC — not when
-        // application code calls Marshal.ReleaseComObject explicitly. Without a forced collection,
-        // mmdevapi.dll still sees a "live" client for the same (process-loopback source, target
-        // process) pair, and the next activation/Initialize for that same target process fails.
-        // This was verified to reproduce independently of WebView2 navigation — it is a pure
-        // GC/COM-RCW timing issue, not a navigation-specific bug (navigation only "looked" related
-        // because a real user typically navigates between Start/Stop cycles).
-        //
-        // Cost: GC.Collect() + GC.WaitForPendingFinalizers() can pause for on the order of tens of
-        // milliseconds. Accepted here because Stop() is a deliberate, one-off user action (clicking
-        // "Stop"), not part of the steady-state audio hot path.
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        GC.Collect();
+    private void RestoreMusicVolumeIfNeeded()
+    {
+        if (_targetBrowserProcessId == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var pids = ProcessTreeHelper.GetProcessTreePids(_targetBrowserProcessId);
+            SessionMuter.RestoreOriginalVolume(pids);
+        }
+        catch (Exception)
+        {
+            // Best-effort — if this fails the user can still adjust YouTube's volume manually;
+            // not worth failing Stop() over.
+        }
+
+        _targetBrowserProcessId = 0;
     }
 
     public void Dispose()

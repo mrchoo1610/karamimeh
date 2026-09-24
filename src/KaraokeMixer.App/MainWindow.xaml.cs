@@ -191,29 +191,25 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
+            // Music/YouTube no longer passes through this engine at all (see AudioMixerCore's
+            // class remarks — Windows mixes it natively), so there is no music peak to show here
+            // anymore; only mic and the mic-only master output.
             double micPercent = Math.Clamp(_engine.MicPeakLevel, 0f, 1f) * 100.0;
-            double musicPercent = Math.Clamp(_engine.MusicPeakLevel, 0f, 1f) * 100.0;
             double masterPercent = Math.Clamp(_engine.MasterPeakLevel, 0f, 1f) * 100.0;
 
             ViewModel.MicPeakPercent = micPercent;
-            ViewModel.MusicPeakPercent = musicPercent;
             ViewModel.MasterPeakPercent = masterPercent;
 
             // Meter track is 328px wide (360 panel width - 16*2 padding); scale by percentage.
             const double meterTrackWidth = 328;
             MicPeakBar.Width = meterTrackWidth * (micPercent / 100.0);
-            MusicPeakBar.Width = meterTrackWidth * (musicPercent / 100.0);
             MasterPeakBar.Width = meterTrackWidth * (masterPercent / 100.0);
 
-            // Log a low-rate sample of all three peaks so a future "no sound" report can be
-            // diagnosed conclusively from the log file (did music ever produce a signal at all?)
-            // instead of relying on what the user subjectively remembers hearing.
+            // Low-rate log sample, kept for future diagnosis of mic-side issues.
             _peakLogTickCount++;
             if (_peakLogTickCount % 20 == 0) // every ~2s at the timer's 100ms interval
             {
-                long total = _engine.YoutubeTotalBytesCaptured;
-                long silent = _engine.YoutubeSilentBytesCaptured;
-                AppendLog($"[Peak] mic={micPercent:F0}% music={musicPercent:F0}% master={masterPercent:F0}% | ytBytes total={total} silent={silent} ({(total > 0 ? (silent * 100.0 / total).ToString("F0") : "-")}% silent)");
+                AppendLog($"[Peak] mic={micPercent:F0}% master={masterPercent:F0}%");
             }
         };
         _peakMeterTimer.Start();
@@ -510,14 +506,12 @@ public sealed partial class MainWindow : Window
             ViewModel.IsEngineRunning = false;
             ViewModel.EngineStatus = "Đã dừng";
             ViewModel.MicPeakPercent = 0;
-            ViewModel.MusicPeakPercent = 0;
             ViewModel.MasterPeakPercent = 0;
             MicPeakBar.Width = 0;
-            MusicPeakBar.Width = 0;
             MasterPeakBar.Width = 0;
             _peakLogTickCount = 0;
             StartStopButton.Content = "Bắt đầu";
-            AppendLog("[Start/Stop] Đã dừng xong (đã ép GC — xem AudioMixerCore.Stop()).");
+            AppendLog("[Start/Stop] Đã dừng xong (đã khôi phục volume gốc của session YouTube).");
             return;
         }
 
@@ -568,10 +562,21 @@ public sealed partial class MainWindow : Window
         ViewModel.IsEngineRunning = true;
         ViewModel.EngineStatus = "Đang chạy";
         StartStopButton.Content = "Dừng";
-        AppendLog($"[Start/Stop] StartAsync THÀNH CÔNG — đang chạy. Số session bị mute: {_engine.LastMuteMatchedCount} " +
-            (_engine.LastMuteMatchedCount == 0
-                ? "(0 có thể là bình thường nếu video YouTube CHƯA phát tiếng nào tại thời điểm bấm Bắt đầu — nếu video ĐANG phát mà vẫn 0, nghĩa là tiếng gốc KHÔNG bị mute, sẽ nghe tiếng gốc + có thể cả bản capture)"
-                : "(đã mute được ít nhất 1 session)"));
+        AppendLog($"[Start/Stop] StartAsync THÀNH CÔNG — đang chạy. Số session YouTube đã chỉnh volume: {_engine.LastMusicSessionMatchedCount} " +
+            (_engine.LastMusicSessionMatchedCount == 0
+                ? "(0 có thể là bình thường nếu video YouTube CHƯA phát tiếng nào tại thời điểm bấm Bắt đầu — Windows chỉ tạo session sau khi video đã phát ít nhất 1 lần; kéo lại thanh trượt Nhạc sau khi video đã phát để áp dụng)"
+                : "(đã chỉnh được ít nhất 1 session)"));
+
+        // Nhạc YouTube giờ luôn phát ra thiết bị MẶC ĐỊNH của Windows (WebView2 luôn theo mặc định
+        // hệ thống — xem AudioMixerCore's class remarks). Nếu người dùng chọn 1 thiết bị output khác
+        // mặc định cho riêng mic, 2 luồng sẽ ra 2 thiết bị khác nhau — cảnh báo rõ thay vì im lặng.
+        string? selectedOutputId = ViewModel.SelectedOutputDevice?.DeviceId;
+        if (!string.IsNullOrEmpty(selectedOutputId) && selectedOutputId != AudioMixerCore.GetDefaultOutputDeviceId())
+        {
+            ShowNotice(
+                "Đang chọn thiết bị output khác mặc định hệ thống — nhạc YouTube vẫn phát ra thiết bị mặc định, còn mic phát ra thiết bị vừa chọn. Để nghe cả 2 cùng chỗ, chọn lại '(Mặc định hệ thống)' hoặc đổi thiết bị mặc định của Windows.",
+                InfoBarSeverity.Warning);
+        }
     }
 
     // --- Debug log (DEBUG-only, mirrors the pattern already used by both spikes) --------------

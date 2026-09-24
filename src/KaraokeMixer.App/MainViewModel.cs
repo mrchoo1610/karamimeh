@@ -104,8 +104,5 @@ public partial class MainViewModel : ObservableObject
     public partial double MicPeakPercent { get; set; }
 
     [ObservableProperty]
-    public partial double MusicPeakPercent { get; set; }
-
-    [ObservableProperty]
     public partial double MasterPeakPercent { get; set; }
 }

@@ -5,67 +5,54 @@ namespace KaraokeMixer.Core.Audio;
 internal sealed record MuteResult(bool Success, IReadOnlyList<uint> MatchedPids, string? Error);
 
 /// <summary>
-/// Mute/unmute session âm thanh (ở mức Windows Audio session, KHÔNG phải mute cả app qua API
-/// riêng của Chromium) cho toàn bộ cây process của WebView2. Dùng NAudio's MMDeviceEnumerator +
-/// AudioSessionManager + SimpleAudioVolume — đây LÀ phần NAudio hỗ trợ sẵn (khác với phần
-/// process-loopback capture phải tự P/Invoke).
+/// Điều khiển âm lượng session Windows Audio (KHÔNG phải mute cả app qua API riêng của Chromium)
+/// cho toàn bộ cây process của WebView2. Dùng NAudio's MMDeviceEnumerator + AudioSessionManager +
+/// SimpleAudioVolume.
 ///
-/// BUG FIX — KHÔNG dùng <c>SimpleAudioVolume.Mute</c> nữa, dùng <c>SimpleAudioVolume.Volume = 0f</c>
-/// thay thế (giữ <c>Mute = false</c> tường minh):
+/// ĐỔI KIẾN TRÚC (2026-09-24) — file này KHÔNG còn "mute rồi capture lại" nữa:
 ///
-/// Bằng chứng thực tế (từ 1 người dùng thật, không phải suy đoán): trong lúc app đang chạy và
-/// <c>AudioMixerCore.YoutubeTotalBytesCaptured</c> đứng yên ở đúng 0 suốt cả phiên (dù video YouTube
-/// đang phát thật), người dùng tự mở Windows Volume Mixer và bỏ mute thủ công đúng session WebView2/
-/// Edge mà <see cref="SetMuteForProcessTree"/> đã set <c>Mute = true</c> — NGAY LẬP TỨC sau đó
-/// <c>YoutubeTotalBytesCaptured</c> bắt đầu tăng (music peak khác 0). Việc mute chính là nguyên nhân
-/// khiến process-loopback capture nhận đúng 0 gói tin, không phải do mic capture chạy đồng thời hay
-/// do thời điểm GC (2 giả thuyết đó đã bị loại bằng thực nghiệm lặp lại — xem
-/// experiments/ConcurrencyRepro — không tái hiện được triệu chứng 0-byte dù đã test mic đồng thời,
-/// GC trước/sau, VÀ set <c>Mute = true</c> trên chính 1 session giả lập (cả tự-capture lẫn 1 process
-/// con thật khác) — thực nghiệm KHÔNG cho thấy Windows Audio Engine tự nó ngừng cấp gói tin cho
-/// process-loopback tap chỉ vì session bị mute).
+/// Lịch sử: bản trước dùng cơ chế này để làm im lặng session gốc của YouTube (qua Mute=true, sau đó
+/// qua Volume=0 khi phát hiện Mute=true làm hỏng process-loopback capture), rồi capture riêng tiếng
+/// YouTube qua <c>ProcessLoopbackCapture</c> và phát lại qua bộ trộn phần mềm của app.
 ///
-/// GIẢI THÍCH HỢP LÝ NHẤT (KHÔNG kiểm chứng được ở mức source code Chromium từ môi trường này —
-/// coi là [Unverified]/[Suy luận], không phải sự thật đã xác nhận): nhiều khả năng bản thân tiến
-/// trình bị capture (Chromium/WebView2, KHÔNG PHẢI Windows Audio Engine nói chung) tự lắng nghe sự
-/// kiện đổi trạng thái session của chính nó (kiểu <c>IAudioSessionEvents::OnSimpleVolumeChanged</c>,
-/// vốn mang cả giá trị volume mới LẪN cờ mute mới) và khi thấy <c>bNewMute == true</c>, tự tối ưu
-/// bằng cách NGỪNG render audio thật sự (không gọi GetBuffer/ReleaseBuffer nữa) để tiết kiệm CPU cho
-/// tab/nội dung "không ai nghe" — nghĩa là KHÔNG CÒN GÓI TIN NÀO được tạo ra cho BẤT KỲ ai tap vào,
-/// kể cả process-loopback capture của app này, chứ không phải do Windows chặn riêng đường capture.
-/// Set <c>Volume = 0f</c> (giữ <c>Mute = false</c>) tạo ra cùng hiệu ứng "im lặng cho người dùng"
-/// nhưng (giả thuyết) không kích hoạt logic tối ưu-theo-mute đó, vì thay đổi float volume và đổi cờ
-/// mute là 2 tín hiệu tách biệt trong Core Audio API.
+/// PHÁT HIỆN THỰC TẾ (từ 1 người dùng thật, không phải suy đoán): CẢ Mute=true LẪN Volume=0 đều
+/// làm <c>ProcessLoopbackCapture.TotalBytesCaptured</c> đứng yên ở đúng 0 suốt phiên — nghĩa là bất
+/// kỳ cách nào làm session "im lặng" đều khiến process bị capture (rất có thể là chính Chromium, tự
+/// phản ứng với thông báo đổi trạng thái session của chính nó) ngừng render audio thật sự, không chỉ
+/// ngừng phát ra tai người nghe. Không tìm được cách nào vừa im lặng được tiếng gốc vừa giữ capture
+/// sống trong thời gian hợp lý.
 ///
-/// ĐÃ KIỂM CHỨNG (xem experiments/ConcurrencyRepro): dùng <c>Volume = 0f</c> thay <c>Mute = true</c>
-/// KHÔNG làm hỏng process-loopback capture trong mọi kịch bản harness đã thử (tự-capture VÀ capture
-/// 1 process con thật khác, có/không có mic đồng thời) — nhưng CẢNH BÁO QUAN TRỌNG: harness đó dùng
-/// NAudio WasapiOut phát 1 tone tổng hợp làm "process giả lập YouTube", bản thân nó KHÔNG có logic
-/// "tự ngừng render khi bị mute" như giả thuyết trên mô tả cho Chromium thật — nên harness đó CŨNG
-/// KHÔNG tái hiện được lỗi gốc ngay cả với <c>Mute = true</c> (xem comment ở trên). Vì vậy validate
-/// thật sự cho fix này PHẢI đến từ người dùng thật chạy lại với WebView2 + YouTube thật, KHÔNG chỉ
-/// dựa vào kết quả harness — ghi rõ điều này để không lặp lại sai lầm "tuyên bố đã sửa" chỉ dựa trên
-/// 1 lần chạy hoặc 1 công cụ tổng hợp không đủ trung thực với hiện tượng gốc.
+/// QUYẾT ĐỊNH KIẾN TRÚC MỚI: bỏ hẳn việc capture lại YouTube. Để YouTube phát bình thường (native,
+/// không đụng vào), và app chỉ phát riêng nhánh mic (đã qua EQ/Echo) ra CÙNG 1 thiết bị output —
+/// Windows Audio Engine tự trộn (mix) mọi app đang phát chung 1 thiết bị ở chế độ Shared, nên người
+/// dùng nghe được cả 2 mà không cần app tự làm việc mixing đó. Ưu điểm: không còn phụ thuộc vào cơ
+/// chế process-loopback capture (vốn đã tốn rất nhiều công sức điều tra lỗi COM/GC — xem lịch sử
+/// trong ProcessLoopbackCapture.cs/README các bản spike — và giờ phát hiện thêm giới hạn nói trên),
+/// độ trễ nhạc bằng 0 (không qua vòng capture→phát lại nào), và KHÔNG mất tính năng nào — thiết kế
+/// gốc từ đầu vốn chỉ cho mic đi qua EQ/Echo, nhạc chỉ có volume.
+///
+/// Vai trò MỚI của file này: "Music Volume" trong UI giờ chỉnh THẲNG vào Volume thật của session
+/// Windows của YouTube (0.0–1.0, đúng thang đo thật của Windows — khác với MicVolume trong
+/// AudioMixerCore vốn là hệ số khuếch đại phần mềm, có thể >1.0 để boost). Không còn khái niệm
+/// "mute" nữa — luôn đảm bảo Mute=false (dọn sạch nếu có sót từ phiên bản cũ), chỉ chỉnh Volume.
 /// </summary>
 internal static class SessionMuter
 {
-    /// <summary>Volume gốc (trước khi app này set về 0) của mỗi PID đã bị "mute" qua
-    /// <see cref="SetMuteForProcessTree"/>, để <c>mute:false</c> khôi phục đúng giá trị cũ thay vì
-    /// hardcode về 1.0f — tránh ghi đè volume mà chính người dùng (hoặc 1 app khác) đã tự chỉnh cho
-    /// session đó trước khi app này đụng vào. Static vì <see cref="SessionMuter"/> chỉ được 1
-    /// <c>AudioMixerCore</c> instance trong 1 process gọi tại 1 thời điểm (cùng giả định với
-    /// <c>AudioMixerCore._mutedBrowserProcessId</c> — xem AudioMixerCore.cs).</summary>
+    /// <summary>Volume gốc (trước khi app này đụng vào) của mỗi PID, để khi Stop() có thể khôi phục
+    /// đúng giá trị cũ thay vì hardcode về 1.0f — tránh ghi đè volume mà chính người dùng (hoặc 1 app
+    /// khác) đã tự chỉnh cho session đó trước khi app này chạm vào. Static vì chỉ 1 <c>AudioMixerCore</c>
+    /// instance trong 1 process gọi tại 1 thời điểm.</summary>
     private static readonly Dictionary<uint, float> OriginalVolumeByPid = new();
 
     /// <summary>
-    /// Tìm mọi audio session (trên default render device) có ProcessID nằm trong <paramref name="targetPids"/>
-    /// và, khi <paramref name="mute"/>=true, set Volume=0 (Mute vẫn để false — xem big comment ở
-    /// trên lý do KHÔNG dùng Mute=true nữa); khi <paramref name="mute"/>=false, khôi phục lại Volume
-    /// gốc đã lưu (hoặc 1.0f nếu vì lý do gì đó không có giá trị gốc, ví dụ session mới xuất hiện sau
-    /// khi mute). Trả về danh sách PID thực sự khớp được (để hiển thị debug).
+    /// Tìm mọi audio session (trên default render device) có ProcessID nằm trong
+    /// <paramref name="targetPids"/> và set Volume = <paramref name="volume"/> (luôn đảm bảo
+    /// Mute=false). Trả về danh sách PID thực sự khớp được (để hiển thị debug). Lưu volume gốc lần
+    /// đầu chạm vào mỗi PID, để <see cref="RestoreOriginalVolume"/> khôi phục đúng.
     /// </summary>
-    public static MuteResult SetMuteForProcessTree(HashSet<uint> targetPids, bool mute)
+    public static MuteResult SetVolumeForProcessTree(HashSet<uint> targetPids, float volume)
     {
+        volume = Math.Clamp(volume, 0f, 1f);
         var matched = new List<uint>();
 
         try
@@ -89,26 +76,56 @@ internal static class SessionMuter
 
                 var simpleVolume = session.SimpleAudioVolume;
 
-                if (mute)
+                if (!OriginalVolumeByPid.ContainsKey(pid))
                 {
-                    if (!OriginalVolumeByPid.ContainsKey(pid))
-                    {
-                        OriginalVolumeByPid[pid] = simpleVolume.Volume;
-                    }
+                    OriginalVolumeByPid[pid] = simpleVolume.Volume;
+                }
 
-                    // Tường minh đảm bảo Mute=false — nếu 1 lần chạy app cũ (trước fix này) hoặc
-                    // người dùng đã set Mute=true trước đó, phải bỏ nó đi, nếu không Volume=0 sẽ
-                    // cộng dồn với Mute=true và có thể vẫn kích hoạt đúng behavior muốn tránh.
-                    simpleVolume.Mute = false;
-                    simpleVolume.Volume = 0f;
-                }
-                else
+                // Đảm bảo không còn sót Mute=true từ 1 phiên chạy trước (bản cũ hơn của app này, hoặc
+                // người dùng tự mute thủ công) — chỉ Volume là kênh điều khiển hợp lệ ở đây.
+                simpleVolume.Mute = false;
+                simpleVolume.Volume = volume;
+
+                matched.Add(pid);
+            }
+
+            return new MuteResult(true, matched, null);
+        }
+        catch (Exception ex)
+        {
+            return new MuteResult(false, matched, ex.Message);
+        }
+    }
+
+    /// <summary>Khôi phục Volume gốc (đã lưu từ lần đầu <see cref="SetVolumeForProcessTree"/> chạm
+    /// vào mỗi PID) — hoặc 1.0f nếu không có giá trị gốc (vd. session xuất hiện sau khi app đã set).
+    /// Gọi khi Stop() để trả lại đúng trạng thái âm lượng YouTube cho người dùng.</summary>
+    public static MuteResult RestoreOriginalVolume(HashSet<uint> targetPids)
+    {
+        var matched = new List<uint>();
+
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var sessionManager = device.AudioSessionManager;
+
+            var sessions = sessionManager.Sessions;
+            for (int i = 0; i < sessions.Count; i++)
+            {
+                var session = sessions[i];
+                uint pid = session.GetProcessID;
+
+                if (!targetPids.Contains(pid))
                 {
-                    float restoreVolume = OriginalVolumeByPid.TryGetValue(pid, out float original) ? original : 1f;
-                    simpleVolume.Mute = false;
-                    simpleVolume.Volume = restoreVolume;
-                    OriginalVolumeByPid.Remove(pid);
+                    continue;
                 }
+
+                float restoreVolume = OriginalVolumeByPid.TryGetValue(pid, out float original) ? original : 1f;
+                var simpleVolume = session.SimpleAudioVolume;
+                simpleVolume.Mute = false;
+                simpleVolume.Volume = restoreVolume;
+                OriginalVolumeByPid.Remove(pid);
 
                 matched.Add(pid);
             }

@@ -170,14 +170,7 @@
                             </Border>
                         </StackPanel>
                         <StackPanel Spacing="4">
-                            <TextBlock Text="Nhạc (YouTube) — để xem nhạc có tới bộ trộn không" FontSize="11" Foreground="{StaticResource BrandTextSecondaryBrush}" />
-                            <Border Height="8" CornerRadius="4" Background="{StaticResource SurfaceAltBrush}" HorizontalAlignment="Stretch">
-                                <Border x:Name="MusicPeakBar" Height="8" CornerRadius="4" Background="{StaticResource BrandCyanBrush}"
-                                        HorizontalAlignment="Left" Width="0" />
-                            </Border>
-                        </StackPanel>
-                        <StackPanel Spacing="4">
-                            <TextBlock Text="Master" FontSize="11" Foreground="{StaticResource BrandTextSecondaryBrush}" />
+                            <TextBlock Text="Master (chỉ tính nhánh mic — nhạc YouTube phát thẳng, Windows tự trộn)" FontSize="11" Foreground="{StaticResource BrandTextSecondaryBrush}" />
                             <Border Height="8" CornerRadius="4" Background="{StaticResource SurfaceAltBrush}" HorizontalAlignment="Stretch">
                                 <Border x:Name="MasterPeakBar" Height="8" CornerRadius="4" Background="{StaticResource BrandPinkBrush}"
                                         HorizontalAlignment="Left" Width="0" />
@@ -195,8 +188,8 @@
                                     ValueChanged="MicVolumeSlider_ValueChanged" />
                         </StackPanel>
                         <StackPanel Spacing="2">
-                            <TextBlock Text="{x:Bind FormatPercent('Nhạc (YouTube)', ViewModel.MusicVolumePercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
-                            <Slider x:Name="MusicVolumeSlider" Minimum="0" Maximum="200"
+                            <TextBlock Text="{x:Bind FormatPercent('Nhạc (YouTube, chỉnh thẳng session Windows)', ViewModel.MusicVolumePercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="MusicVolumeSlider" Minimum="0" Maximum="100"
                                     Value="{x:Bind ViewModel.MusicVolumePercent, Mode=TwoWay}"
                                     ValueChanged="MusicVolumeSlider_ValueChanged" />
                         </StackPanel>

@@ -6,35 +6,23 @@ using NAudio.Wave.SampleProviders;
 namespace KaraokeMixer.Core.Tests;
 
 /// <summary>
-/// Regression coverage for the real bug this fix addresses: a real user's machine showed
-/// AudioMixerCore's YouTube process-loopback capture stuck at exactly 0 bytes for an entire session
-/// while <c>SessionMuter.SetMuteForProcessTree(pids, mute: true)</c> had set that process's Windows
-/// Audio session <c>Mute = true</c> — and manually un-muting the session in Windows' own Volume
-/// Mixer made bytes start flowing immediately. The empirically-confirmed fix is to stop using the
-/// session's <c>Mute</c> flag entirely and instead drive its <c>Volume</c> to 0 (see the big comment
-/// on <see cref="SessionMuter.SetMuteForProcessTree"/> for the full evidence and the — explicitly
-/// [Unverified] — leading theory for why Mute=true breaks the capture: the captured process itself,
-/// not Windows' audio engine, most likely stops rendering audio when it observes its own session
-/// went silent).
-///
-/// This test cannot reproduce the ORIGINAL zero-bytes symptom (that requires a real WebView2 +
-/// YouTube process reacting to its own session-mute notification — a synthetic NAudio WasapiOut tone
-/// in this test process has no such reaction, confirmed separately via experiments/ConcurrencyRepro,
-/// which found Mute=true never broke capture in the synthetic harness either). What THIS test does
-/// verify, mechanically, is the contract change itself: that <c>SetMuteForProcessTree(mute: true)</c>
-/// no longer touches <c>Mute</c> (leaves/sets it false) and instead sets <c>Volume = 0</c>, and that
-/// <c>SetMuteForProcessTree(mute: false)</c> restores the session's ORIGINAL volume (not a hardcoded
-/// 1.0) rather than just flipping Mute back off. Guards against silently regressing back to the
-/// Mute=true implementation that real evidence showed breaks process-loopback capture.
+/// Regression coverage for <see cref="SessionMuter"/>'s current role: a direct Windows-session
+/// Volume control used for the "Music Volume" slider (see the big class doc comment on
+/// <see cref="SessionMuter"/> for the full history — an earlier "mute-then-recapture" architecture
+/// was abandoned after real evidence showed both Mute=true AND Volume=0 broke a separate
+/// process-loopback capture mechanism that is no longer used at all). These tests just verify the
+/// mechanical contract: <see cref="SessionMuter.SetVolumeForProcessTree"/> sets Volume (never Mute)
+/// and clamps to 0..1, and <see cref="SessionMuter.RestoreOriginalVolume"/> restores the ORIGINAL
+/// volume (not a hardcoded 1.0) captured the first time a PID was touched.
 ///
 /// Needs a real default render (playback) device to create a real audio session against — skips
-/// (passes trivially, logging why) rather than failing on a machine/CI runner with no audio device,
-/// since that is an environment limitation, not a code defect.
+/// (passes trivially) rather than failing on a machine/CI runner with no audio device, since that is
+/// an environment limitation, not a code defect.
 /// </summary>
 public class SessionMuterTests
 {
     [Fact]
-    public void SetMuteForProcessTree_MuteTrue_SetsVolumeZeroAndLeavesMuteFlagFalse()
+    public void SetVolumeForProcessTree_SetsVolumeAndLeavesMuteFlagFalse()
     {
         if (!TryCreateOwnAudioSession(out var toneOut, out var device))
         {
@@ -48,27 +36,54 @@ public class SessionMuterTests
             {
                 var ownPids = new HashSet<uint> { (uint)Environment.ProcessId };
 
-                var muteResult = SessionMuter.SetMuteForProcessTree(ownPids, mute: true);
+                var result = SessionMuter.SetVolumeForProcessTree(ownPids, volume: 0f);
 
-                Assert.True(muteResult.Success, muteResult.Error);
-                Assert.Contains((uint)Environment.ProcessId, muteResult.MatchedPids);
+                Assert.True(result.Success, result.Error);
+                Assert.Contains((uint)Environment.ProcessId, result.MatchedPids);
 
                 var session = FindOwnSession(device);
                 Assert.NotNull(session);
-                Assert.False(session!.SimpleAudioVolume.Mute, "Mute flag must stay false — setting it true is exactly what broke process-loopback capture on real hardware.");
+                Assert.False(session!.SimpleAudioVolume.Mute, "Mute flag must stay false — this class only ever drives Volume.");
                 Assert.Equal(0f, session.SimpleAudioVolume.Volume);
             }
             finally
             {
                 // Best-effort restore even if an assertion above threw, so this test never leaves a
-                // muted/zero-volume session behind for a later test or a developer's own speakers.
-                SessionMuter.SetMuteForProcessTree(new HashSet<uint> { (uint)Environment.ProcessId }, mute: false);
+                // zero-volume session behind for a later test or a developer's own speakers.
+                SessionMuter.RestoreOriginalVolume(new HashSet<uint> { (uint)Environment.ProcessId });
             }
         }
     }
 
     [Fact]
-    public void SetMuteForProcessTree_MuteFalse_RestoresOriginalVolumeNotHardcodedOne()
+    public void SetVolumeForProcessTree_ClampsOutOfRangeValues()
+    {
+        if (!TryCreateOwnAudioSession(out var toneOut, out var device))
+        {
+            return;
+        }
+
+        using (toneOut)
+        using (device)
+        {
+            var ownPids = new HashSet<uint> { (uint)Environment.ProcessId };
+            try
+            {
+                SessionMuter.SetVolumeForProcessTree(ownPids, volume: 5f);
+                Assert.Equal(1f, FindOwnSession(device)!.SimpleAudioVolume.Volume, precision: 3);
+
+                SessionMuter.SetVolumeForProcessTree(ownPids, volume: -1f);
+                Assert.Equal(0f, FindOwnSession(device)!.SimpleAudioVolume.Volume, precision: 3);
+            }
+            finally
+            {
+                SessionMuter.RestoreOriginalVolume(ownPids);
+            }
+        }
+    }
+
+    [Fact]
+    public void RestoreOriginalVolume_RestoresOriginalNotHardcodedOne()
     {
         if (!TryCreateOwnAudioSession(out var toneOut, out var device))
         {
@@ -82,18 +97,19 @@ public class SessionMuterTests
             var originalSession = FindOwnSession(device);
             Assert.NotNull(originalSession);
 
-            // Set a distinctive, non-default volume BEFORE muting, so restoring to a hardcoded 1.0f
-            // (the old, wrong behavior) would be distinguishable from correctly restoring 0.5f.
+            // Set a distinctive, non-default volume BEFORE touching it via SessionMuter, so
+            // restoring to a hardcoded 1.0f (the old, wrong behavior) would be distinguishable from
+            // correctly restoring 0.5f.
             originalSession!.SimpleAudioVolume.Volume = 0.5f;
 
             try
             {
-                var muteResult = SessionMuter.SetMuteForProcessTree(ownPids, mute: true);
-                Assert.True(muteResult.Success, muteResult.Error);
+                var setResult = SessionMuter.SetVolumeForProcessTree(ownPids, volume: 0f);
+                Assert.True(setResult.Success, setResult.Error);
                 Assert.Equal(0f, FindOwnSession(device)!.SimpleAudioVolume.Volume);
 
-                var unmuteResult = SessionMuter.SetMuteForProcessTree(ownPids, mute: false);
-                Assert.True(unmuteResult.Success, unmuteResult.Error);
+                var restoreResult = SessionMuter.RestoreOriginalVolume(ownPids);
+                Assert.True(restoreResult.Success, restoreResult.Error);
 
                 var restoredSession = FindOwnSession(device);
                 Assert.NotNull(restoredSession);
@@ -102,7 +118,7 @@ public class SessionMuterTests
             }
             finally
             {
-                SessionMuter.SetMuteForProcessTree(ownPids, mute: false);
+                SessionMuter.RestoreOriginalVolume(ownPids);
             }
         }
     }

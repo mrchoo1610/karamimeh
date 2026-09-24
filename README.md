@@ -5,9 +5,24 @@ Karaoke mixer chạy trên Windows: hát karaoke với nhạc lấy trực tiế
 
 Sub-app trong hệ sinh thái **MimeHub** (karaoke + mimehub = karamimeh).
 
-> **Đang trong giai đoạn beta.** Đã hoạt động: đăng nhập YouTube, lấy tiếng nhạc từ YouTube (process
-> loopback capture), mic + EQ + Echo + mixer + chọn thiết bị vào/ra. Chưa có: chống hú, Reverb, giao
-> diện chính thức theo bản thiết kế UX đầy đủ.
+> **Đang trong giai đoạn beta.** Đã hoạt động: đăng nhập YouTube, mic qua EQ 3 dải + Echo, chọn thiết
+> bị mic/output. Nhạc YouTube **phát trực tiếp, không qua xử lý** — xem mục "Vì sao không capture lại
+> tiếng YouTube" bên dưới. Chưa có: chống hú, Reverb, giao diện chính thức theo bản thiết kế UX đầy đủ.
+
+## Vì sao không capture lại tiếng YouTube
+
+Bản đầu có thử bắt riêng tiếng YouTube (qua kỹ thuật "process-loopback capture" của Windows) để trộn
+cùng mic bằng phần mềm. Sau nhiều vòng điều tra lỗi (xem lịch sử commit và các comment lớn trong
+`ProcessLoopbackCapture.cs`/`AudioMixerCore.cs`), phát hiện: **bất kỳ cách nào làm im lặng session
+gốc của YouTube (Mute=true hay Volume=0) đều khiến việc capture nhận đúng 0 gói tin** — nhiều khả
+năng chính Chromium tự ngừng render khi thấy session của nó bị im lặng.
+
+Vì thiết kế DSP gốc vốn chỉ áp EQ/Echo cho mic (nhạc chỉ có volume), giải pháp đơn giản hơn hẳn: để
+YouTube phát bình thường, không đụng vào; app chỉ phát mic (đã qua EQ/Echo) ra **cùng thiết bị**;
+Windows tự trộn 2 luồng (đúng bản chất "Shared mode" của Windows Audio) — không cần capture, không
+lỗi COM/GC, độ trễ nhạc = 0. "Âm lượng nhạc" trong UI giờ chỉnh thẳng vào Volume Mixer của Windows
+cho session YouTube. Code capture cũ (`Audio/ProcessLoopbackCapture.cs`) vẫn hoạt động đúng và được
+giữ lại làm tham khảo, chỉ không dùng trong pipeline mặc định nữa.
 
 ## Cấu trúc
 

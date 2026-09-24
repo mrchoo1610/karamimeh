@@ -42,6 +42,16 @@ internal sealed record CaptureStartResult(bool Success, string Stage, int HResul
 /// WAVEFORMATEX vì GetMixFormat trả E_NOTIMPL trên client loại này) -> GetService IAudioCaptureClient
 /// -> Start -> vòng lặp đọc buffer trên 1 thread nền, đẩy PCM byte vào BufferedWaveProvider để
 /// WasapiOut ở phía khác đọc ra loa.
+///
+/// [KHÔNG CÒN ĐƯỢC DÙNG BỞI AudioMixerCore, 2026-09-24] — cơ chế này VẪN hoạt động đúng (đã kiểm
+/// chứng kỹ qua spike/ProcessLoopbackSpike, kể cả với video YouTube thật), nhưng bị bỏ khỏi pipeline
+/// mặc định sau khi phát hiện: mọi cách làm im lặng session gốc để tránh nghe 2 lần (Mute=true, rồi
+/// Volume=0) đều khiến process bị capture (rất có thể chính Chromium) ngừng render hẳn, capture nhận
+/// đúng 0 byte. Không tìm được cách nào vừa im lặng được tiếng gốc vừa giữ capture sống trong thời
+/// gian hợp lý. Xem giải thích đầy đủ trong <c>AudioMixerCore</c>'s class remarks. Giữ lại file này
+/// (không xoá) vì: (1) cơ chế P/Invoke rất khó làm lại từ đầu nếu cần sau này, (2) vẫn dùng được cho
+/// 1 kịch bản khác — capture 1 tiến trình mà KHÔNG cần im lặng nó (ví dụ: ghi lại tiếng của 1 app
+/// khác song song với tiếng gốc vẫn phát bình thường).
 /// </summary>
 internal sealed class ProcessLoopbackCapture : IDisposable
 {

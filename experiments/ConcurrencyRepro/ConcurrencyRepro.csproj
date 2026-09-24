@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <AssemblyName>ConcurrencyRepro</AssemblyName>
+    <!-- Throwaway investigation harness for the "YouTube process-loopback capture receives 0 bytes
+         while mic capture runs concurrently" bug. NOT part of KaraokeMixer.sln on purpose — this is
+         not a shipped component. See Program.cs for what it tests and why. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KaraokeMixer.Core\KaraokeMixer.Core.csproj" />
+  </ItemGroup>
+
+</Project>

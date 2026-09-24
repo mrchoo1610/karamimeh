@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Application
+    x:Class="KaraokeMixer.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedTheme="Dark">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <!--
+                Brand palette — karamimeh = "kara"(oke) + "mimeh"(ub), carried over unchanged from
+                WebViewLoginSpike/App.xaml (this is the app's real visual identity now, not just a
+                spike palette). Calmer dark tone: nền gần đen, tối đa 1-2 điểm nhấn pink/cyan trên
+                mỗi màn hình, còn lại dùng thang xám trung tính. Giá trị và độ tương phản (WCAG) lấy
+                từ báo cáo UX/UI 2026-09-24. Per explicit instruction, the diagnostics bar and "by
+                MimeHub" tagline that were removed from that spike are NOT reintroduced here — this
+                pass is about the audio engine, not UI polish (a separate later task covers that).
+            -->
+            <SolidColorBrush x:Key="BrandBgBrush" Color="#0B0A14" />
+            <SolidColorBrush x:Key="BrandSurfaceBrush" Color="#171426" />
+            <SolidColorBrush x:Key="SurfaceAltBrush" Color="#211D33" />
+            <SolidColorBrush x:Key="SurfaceHoverBrush" Color="#2A2540" />
+            <SolidColorBrush x:Key="BrandBorderBrush" Color="#2A2440" />
+            <SolidColorBrush x:Key="BorderStrongBrush" Color="#6E6890" />
+
+            <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F2F0F7" />
+            <SolidColorBrush x:Key="TextSecondaryBrush" Color="#B8B3CC" />
+            <SolidColorBrush x:Key="BrandTextSecondaryBrush" Color="#9C97B8" />
+            <SolidColorBrush x:Key="TextDisabledBrush" Color="#5E5A73" />
+
+            <SolidColorBrush x:Key="BrandPinkBrush" Color="#FF3D81" />
+            <SolidColorBrush x:Key="PinkHoverBrush" Color="#FF5C95" />
+            <SolidColorBrush x:Key="PinkPressedBrush" Color="#E0306F" />
+            <SolidColorBrush x:Key="PinkSubtleBrush" Color="#3C1B35" />
+            <SolidColorBrush x:Key="OnAccentTextBrush" Color="#0B0A14" />
+
+            <SolidColorBrush x:Key="BrandCyanBrush" Color="#22D3EE" />
+
+            <SolidColorBrush x:Key="WarningBrush" Color="#F5B942" />
+            <SolidColorBrush x:Key="DangerBrush" Color="#FF5A5F" />
+            <SolidColorBrush x:Key="SuccessBrush" Color="#3DDC97" />
+
+            <!-- Không còn dùng cho UI thật, giữ lại để không phá binding cũ nếu còn tham chiếu -->
+            <SolidColorBrush x:Key="BrandPurpleBrush" Color="#8B5CF6" />
+
+            <!--
+                Lightweight styling app-level cho AccentButtonStyle: set Foreground/Background
+                cục bộ trên Button bị visual state PointerOver/Pressed của theme đè lại, nên phải
+                ghi đè đúng resource key mà template của control đang tham chiếu (ThemeResource).
+            -->
+            <SolidColorBrush x:Key="AccentButtonBackground" Color="#FF3D81" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#FF5C95" />
+            <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#E0306F" />
+            <SolidColorBrush x:Key="AccentButtonForeground" Color="#0B0A14" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#0B0A14" />
+            <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#0B0A14" />
+
+            <Style x:Key="BrandPrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource AccentButtonStyle}">
+                <Setter Property="FontWeight" Value="SemiBold" />
+                <Setter Property="Height" Value="36" />
+                <Setter Property="Padding" Value="16,0" />
+            </Style>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

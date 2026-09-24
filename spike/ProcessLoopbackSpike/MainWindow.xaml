@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="ProcessLoopbackSpike.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ProcessLoopbackSpike"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    mc:Ignorable="d"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:d="http://schemas.microsoft.com/winfx/2006/xaml/presentation/design">
+
+    <Grid x:Name="RootGrid">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="420" />
+        </Grid.ColumnDefinitions>
+
+        <!-- WebView2: trang test-tone HOẶC video thật (YouTube) qua thanh địa chỉ bên dưới -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="8" Padding="8">
+                <Button x:Name="GoTestToneButton" Content="Tone 440Hz" Click="GoTestToneButton_Click" />
+                <Button x:Name="GoYouTubeButton" Content="YouTube" Click="GoYouTubeButton_Click" />
+                <TextBox x:Name="UrlBox" Width="420" PlaceholderText="Dán URL video YouTube rồi bấm Đi" />
+                <Button x:Name="GoUrlButton" Content="Đi" Click="GoUrlButton_Click" />
+            </StackPanel>
+
+            <controls:WebView2 x:Name="WebView" Grid.Row="1" />
+        </Grid>
+
+        <!-- Bảng điều khiển / trạng thái spike -->
+        <ScrollViewer Grid.Column="1" Padding="16">
+            <StackPanel Spacing="10">
+                <TextBlock Text="ProcessLoopbackSpike (P1)" FontSize="18" FontWeight="Bold" />
+                <TextBlock Text="Spike kiểm tra: capture audio riêng WebView2 qua process-loopback, mute session gốc, phát lại qua WasapiOut."
+                           TextWrapping="Wrap" FontSize="12" Opacity="0.7" />
+
+                <Border BorderBrush="Gray" BorderThickness="0,1,0,0" Margin="0,8,0,8" />
+
+                <TextBlock Text="Điều khiển" FontWeight="SemiBold" />
+                <Grid ColumnSpacing="8" RowSpacing="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition />
+                        <RowDefinition />
+                    </Grid.RowDefinitions>
+
+                    <Button x:Name="StartCaptureButton" Grid.Row="0" Grid.Column="0"
+                            Content="Bắt đầu capture" HorizontalAlignment="Stretch"
+                            Click="StartCaptureButton_Click" />
+                    <Button x:Name="StopCaptureButton" Grid.Row="0" Grid.Column="1"
+                            Content="Dừng capture" HorizontalAlignment="Stretch"
+                            Click="StopCaptureButton_Click" IsEnabled="False" />
+                    <Button x:Name="MuteButton" Grid.Row="1" Grid.Column="0"
+                            Content="Mute WebView2" HorizontalAlignment="Stretch"
+                            Click="MuteButton_Click" />
+                    <Button x:Name="UnmuteButton" Grid.Row="1" Grid.Column="1"
+                            Content="Bỏ mute WebView2" HorizontalAlignment="Stretch"
+                            Click="UnmuteButton_Click" />
+                </Grid>
+
+                <Border BorderBrush="Gray" BorderThickness="0,1,0,0" Margin="0,8,0,8" />
+
+                <TextBlock Text="Trạng thái" FontWeight="SemiBold" />
+                <TextBlock Text="{x:Bind FormatBrowserPid(ViewModel.BrowserProcessId), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+                <TextBlock Text="{x:Bind FormatProcessTree(ViewModel.ProcessTreeInfo), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+                <TextBlock Text="{x:Bind FormatCapture(ViewModel.CaptureStatus), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+                <TextBlock Text="{x:Bind FormatInitFlags(ViewModel.InitializeFlagsInfo), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+                <TextBlock Text="{x:Bind FormatMute(ViewModel.MuteStatus), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+                <TextBlock Text="{x:Bind FormatMutedPids(ViewModel.MutedPidsInfo), Mode=OneWay}" TextWrapping="Wrap" FontSize="12" />
+
+                <TextBlock Text="Mức tín hiệu đã capture (peak, cập nhật ~10 lần/giây):" FontSize="12" Margin="0,8,0,0" />
+                <Grid Height="18" Background="#222" CornerRadius="4">
+                    <Rectangle x:Name="PeakLevelBar" HorizontalAlignment="Left" Fill="#3ddc97"
+                               Width="0" />
+                </Grid>
+                <TextBlock Text="{x:Bind ViewModel.PeakLevelText, Mode=OneWay}" FontSize="12" HorizontalAlignment="Right" />
+
+                <Border BorderBrush="Gray" BorderThickness="0,1,0,0" Margin="0,8,0,8" />
+                <TextBlock Text="Log" FontWeight="SemiBold" />
+                <TextBox Text="{x:Bind ViewModel.LogText, Mode=OneWay}"
+                         IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+                         Height="220" FontFamily="Consolas" FontSize="11" />
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

@@ -1,0 +1,76 @@
+name: Release
+
+# Chạy khi đẩy 1 tag dạng v0.1.0, v0.1.0-beta1, v1.2.3, ...
+# Cách phát hành 1 bản mới: `git tag v0.1.0-beta1 && git push origin v0.1.0-beta1`
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # cần quyền này để tạo GitHub Release
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Lấy version từ tag (bỏ chữ 'v' ở đầu)
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $version"
+
+      - name: Restore + build + test toàn bộ solution
+        run: |
+          dotnet restore KaraokeMixer.sln
+          dotnet build KaraokeMixer.sln -c Release -p:Platform=x64 --no-restore
+          dotnet test tests/KaraokeMixer.Core.Tests/KaraokeMixer.Core.Tests.csproj -c Release -p:Platform=x64 --no-build
+
+      - name: Publish KaraokeMixer.App (win-x64, self-contained)
+        run: >
+          dotnet publish src/KaraokeMixer.App/KaraokeMixer.App.csproj
+          -c Release -r win-x64 --self-contained true -p:Platform=x64
+          -p:Version=${{ steps.version.outputs.version }}
+          -o publish
+
+      - name: Cài Velopack CLI (vpk)
+        run: dotnet tool install -g vpk
+
+      - name: Đóng gói bằng Velopack
+        run: >
+          vpk pack
+          --packId karamimeh
+          --packVersion ${{ steps.version.outputs.version }}
+          --packDir publish
+          --mainExe karamimeh.exe
+          --icon karamimeh.ico
+          --packTitle karamimeh
+          --packAuthors "karamimeh"
+          -o Releases
+
+      # Nếu version chứa "-" (vd. 0.1.0-beta1) thì coi là pre-release trên GitHub.
+      - name: Xác định có phải pre-release không
+        id: prerelease
+        shell: pwsh
+        run: |
+          $isPre = "${{ steps.version.outputs.version }}".Contains('-')
+          "isPrerelease=$isPre" >> $env:GITHUB_OUTPUT
+
+      - name: Đăng lên GitHub Releases
+        run: >
+          vpk upload github
+          --repoUrl https://github.com/${{ github.repository }}
+          --token ${{ secrets.GITHUB_TOKEN }}
+          --tag ${{ github.ref_name }}
+          --publish
+          ${{ steps.prerelease.outputs.isPrerelease == 'True' && '--pre' || '' }}
+          -o Releases

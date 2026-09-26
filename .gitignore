@@ -2,6 +2,7 @@
 bin/
 obj/
 Releases/
+publish/
 *.pdb
 
 # Visual Studio / Rider / VS Code

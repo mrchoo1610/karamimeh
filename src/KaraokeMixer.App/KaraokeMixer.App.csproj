@@ -32,4 +32,16 @@
     <ProjectReference Include="..\KaraokeMixer.Core\KaraokeMixer.Core.csproj" />
   </ItemGroup>
 
+  <!-- BUG FIX: dotnet publish (unpackaged, WindowsPackageType=None) không copy $(AssemblyName).pri
+       vào thư mục publish dù build thường (bin\) vẫn sinh ra file này đầy đủ. Thiếu file này khiến
+       WinUI3 thỉnh thoảng (không phải lúc nào cũng) fail-fast 0xC000027B ngay khi khởi tạo XAML —
+       xác nhận bằng WinDbg: MRM.dll báo "The system cannot find the file specified" khi tìm resource
+       index của chính app, ngay trước khi Microsoft.UI.Xaml.dll ném lỗi và process bị kill. -->
+  <Target Name="CopyAppPriToPublishDir" AfterTargets="Publish">
+    <ItemGroup>
+      <_AppPriFile Include="$(OutDir)$(AssemblyName).pri" Condition="Exists('$(OutDir)$(AssemblyName).pri')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_AppPriFile)" DestinationFolder="$(PublishDir)" Condition="'@(_AppPriFile)' != ''" />
+  </Target>
+
 </Project>

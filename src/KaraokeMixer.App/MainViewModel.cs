@@ -101,6 +101,30 @@ public partial class MainViewModel : ObservableObject
     public partial double EchoMixPercent { get; set; } = 30;
 
     [ObservableProperty]
+    public partial bool FeedbackSuppressionEnabled { get; set; } = true;
+
+    [ObservableProperty]
+    public partial double FeedbackSuppressionSensitivityPercent { get; set; } = 50;
+
+    [ObservableProperty]
+    public partial double FeedbackSuppressionDepthDb { get; set; } = 15;
+
+    [ObservableProperty]
+    public partial int FeedbackActiveNotchCount { get; set; }
+
+    [ObservableProperty]
+    public partial bool ReverbEnabled { get; set; }
+
+    [ObservableProperty]
+    public partial double ReverbRoomSizePercent { get; set; } = 50;
+
+    [ObservableProperty]
+    public partial double ReverbDampingPercent { get; set; } = 50;
+
+    [ObservableProperty]
+    public partial double ReverbMixPercent { get; set; } = 30;
+
+    [ObservableProperty]
     public partial double MicPeakPercent { get; set; }
 
     [ObservableProperty]

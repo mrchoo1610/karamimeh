@@ -26,7 +26,8 @@ public sealed record MicDeviceInfo(string Id, string Name);
 ///
 /// <code>
 /// Mic (WASAPI capture, chosen or default device)
-///   → Mono → EQ 3-band → Echo → back to Stereo → Mic Volume → normalize → SoftClip → PeakMeter → WasapiOut
+///   → Mono → Feedback Suppressor → EQ 3-band → Echo → Reverb → back to Stereo → Mic Volume
+///   → normalize → SoftClip → PeakMeter → WasapiOut
 ///
 /// YouTube (WebView2): NOT captured. Plays natively, unmodified, on the system's default output
 /// device. "Music Volume" instead drives that process tree's own Windows Audio session Volume
@@ -34,9 +35,8 @@ public sealed record MicDeviceInfo(string Id, string Name);
 /// on its own — see the big [ARCHITECTURE CHANGE] comment below for why.
 /// </code>
 ///
-/// Deliberately out of scope for this pass: acoustic-feedback suppression (notch-filter
-/// auto-detection) and Reverb/Freeverb. Both are plain omissions here, not stubs, so there is
-/// nothing half-wired to trip over.
+/// Acoustic-feedback suppression (auto-detecting notch filter) and Reverb (Freeverb) are both wired
+/// in — see <see cref="FeedbackSuppressorSampleProvider"/> and <see cref="ReverbSampleProvider"/>.
 /// </summary>
 /// <remarks>
 /// [ARCHITECTURE CHANGE, 2026-09-24] This class used to also run a process-loopback capture of the
@@ -81,8 +81,10 @@ public sealed class AudioMixerCore : IDisposable
     private CaptureSource? _micCapture;
     private WasapiOut? _output;
 
+    private FeedbackSuppressorSampleProvider? _micFeedbackSuppressor;
     private ThreeBandEqSampleProvider? _micEq;
     private EchoSampleProvider? _micEcho;
+    private ReverbSampleProvider? _micReverb;
     private VolumeSampleProvider? _micVolumeProvider;
     private PeakMeterSampleProvider? _micPeakMeter;
     private PeakMeterSampleProvider? _masterPeakMeter;
@@ -215,6 +217,94 @@ public sealed class AudioMixerCore : IDisposable
             if (_micEq is not null)
             {
                 _micEq.HighGainDb = value;
+            }
+        }
+    }
+
+    public bool FeedbackSuppressionEnabled
+    {
+        get => _micFeedbackSuppressor?.Enabled ?? false;
+        set
+        {
+            if (_micFeedbackSuppressor is not null)
+            {
+                _micFeedbackSuppressor.Enabled = value;
+            }
+        }
+    }
+
+    public float FeedbackSuppressionSensitivity
+    {
+        get => _micFeedbackSuppressor?.Sensitivity ?? 0f;
+        set
+        {
+            if (_micFeedbackSuppressor is not null)
+            {
+                _micFeedbackSuppressor.Sensitivity = value;
+            }
+        }
+    }
+
+    public float FeedbackSuppressionDepthDb
+    {
+        get => _micFeedbackSuppressor?.SuppressionDepthDb ?? 0f;
+        set
+        {
+            if (_micFeedbackSuppressor is not null)
+            {
+                _micFeedbackSuppressor.SuppressionDepthDb = value;
+            }
+        }
+    }
+
+    /// <summary>Number of feedback notches currently engaged — 0 does not mean the suppressor is
+    /// off, only that no howling is currently detected. See <see cref="FeedbackSuppressorSampleProvider"/>.</summary>
+    public int FeedbackActiveNotchCount => _micFeedbackSuppressor?.ActiveNotchCount ?? 0;
+
+    public bool ReverbEnabled
+    {
+        get => _micReverb?.Enabled ?? false;
+        set
+        {
+            if (_micReverb is not null)
+            {
+                _micReverb.Enabled = value;
+            }
+        }
+    }
+
+    public float ReverbRoomSize
+    {
+        get => _micReverb?.RoomSize ?? 0f;
+        set
+        {
+            if (_micReverb is not null)
+            {
+                _micReverb.RoomSize = value;
+            }
+        }
+    }
+
+    public float ReverbDamping
+    {
+        get => _micReverb?.Damping ?? 0f;
+        set
+        {
+            if (_micReverb is not null)
+            {
+                _micReverb.Damping = value;
+            }
+        }
+    }
+
+    public float ReverbWetDryMix
+    {
+        get => _micReverb?.WetDryMix ?? 0f;
+        set
+        {
+            if (_micReverb is not null)
+            {
+                _micReverb.WetDryMix = value;
             }
         }
     }
@@ -393,7 +483,8 @@ public sealed class AudioMixerCore : IDisposable
 
         try
         {
-            // --- Mic DSP chain: Mono → EQ → Echo → back to Stereo → Volume → normalize --------
+            // --- Mic DSP chain: Mono → FeedbackSuppressor → EQ → Echo → Reverb → back to Stereo
+            // → Volume → normalize --------------------------------------------------------------
             ISampleProvider micChain = _micCapture;
             _micPeakMeter = new PeakMeterSampleProvider(micChain);
             micChain = _micPeakMeter;
@@ -403,11 +494,17 @@ public sealed class AudioMixerCore : IDisposable
                 micChain = new DownmixToMonoSampleProvider(micChain);
             }
 
+            _micFeedbackSuppressor = new FeedbackSuppressorSampleProvider(micChain) { Enabled = false };
+            micChain = _micFeedbackSuppressor;
+
             _micEq = new ThreeBandEqSampleProvider(micChain);
             micChain = _micEq;
 
             _micEcho = new EchoSampleProvider(micChain) { Enabled = false };
             micChain = _micEcho;
+
+            _micReverb = new ReverbSampleProvider(micChain) { Enabled = false };
+            micChain = _micReverb;
 
             if (targetFormat.Channels > 1)
             {
@@ -474,8 +571,10 @@ public sealed class AudioMixerCore : IDisposable
         _deviceEnumerator?.Dispose();
         _deviceEnumerator = null;
 
+        _micFeedbackSuppressor = null;
         _micEq = null;
         _micEcho = null;
+        _micReverb = null;
         _micVolumeProvider = null;
         _micPeakMeter = null;
         _masterPeakMeter = null;
@@ -520,8 +619,10 @@ public sealed class AudioMixerCore : IDisposable
         _deviceEnumerator?.Dispose();
         _deviceEnumerator = null;
 
+        _micFeedbackSuppressor = null;
         _micEq = null;
         _micEcho = null;
+        _micReverb = null;
         _micVolumeProvider = null;
         _micPeakMeter = null;
         _masterPeakMeter = null;

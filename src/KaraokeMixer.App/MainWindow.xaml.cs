@@ -199,6 +199,7 @@ public sealed partial class MainWindow : Window
 
             ViewModel.MicPeakPercent = micPercent;
             ViewModel.MasterPeakPercent = masterPercent;
+            ViewModel.FeedbackActiveNotchCount = _engine.FeedbackActiveNotchCount;
 
             // Meter track is 328px wide (360 panel width - 16*2 padding); scale by percentage.
             const double meterTrackWidth = 328;
@@ -611,6 +612,13 @@ public sealed partial class MainWindow : Window
         _engine.EchoDelayMilliseconds = (int)ViewModel.EchoDelayMs;
         _engine.EchoFeedback = (float)(ViewModel.EchoFeedbackPercent / 100.0);
         _engine.EchoWetDryMix = (float)(ViewModel.EchoMixPercent / 100.0);
+        _engine.FeedbackSuppressionEnabled = ViewModel.FeedbackSuppressionEnabled;
+        _engine.FeedbackSuppressionSensitivity = (float)(ViewModel.FeedbackSuppressionSensitivityPercent / 100.0);
+        _engine.FeedbackSuppressionDepthDb = (float)ViewModel.FeedbackSuppressionDepthDb;
+        _engine.ReverbEnabled = ViewModel.ReverbEnabled;
+        _engine.ReverbRoomSize = (float)(ViewModel.ReverbRoomSizePercent / 100.0);
+        _engine.ReverbDamping = (float)(ViewModel.ReverbDampingPercent / 100.0);
+        _engine.ReverbWetDryMix = (float)(ViewModel.ReverbMixPercent / 100.0);
     }
 
     private void MicVolumeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -685,6 +693,62 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void FeedbackSuppressionToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.FeedbackSuppressionEnabled = FeedbackSuppressionToggle.IsOn;
+        }
+    }
+
+    private void FeedbackSensitivitySlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.FeedbackSuppressionSensitivity = (float)(e.NewValue / 100.0);
+        }
+    }
+
+    private void FeedbackDepthSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.FeedbackSuppressionDepthDb = (float)e.NewValue;
+        }
+    }
+
+    private void ReverbToggle_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.ReverbEnabled = ReverbToggle.IsOn;
+        }
+    }
+
+    private void ReverbRoomSizeSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.ReverbRoomSize = (float)(e.NewValue / 100.0);
+        }
+    }
+
+    private void ReverbDampingSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.ReverbDamping = (float)(e.NewValue / 100.0);
+        }
+    }
+
+    private void ReverbMixSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+    {
+        if (ViewModel.IsEngineRunning)
+        {
+            _engine.ReverbWetDryMix = (float)(e.NewValue / 100.0);
+        }
+    }
+
     // Hàm hỗ trợ cho x:Bind function binding.
     public Visibility BoolToVis(bool value) => value ? Visibility.Visible : Visibility.Collapsed;
 
@@ -699,4 +763,8 @@ public sealed partial class MainWindow : Window
     public string FormatDb(string label, double value) => $"{label}: {value:+0.0;-0.0;0.0} dB";
 
     public string FormatMs(string label, double value) => $"{label}: {value:F0} ms";
+
+    public string FormatNotchCount(int count) => count == 0
+        ? "Chưa phát hiện hú"
+        : $"Đang chặn {count} tần số hú";
 }

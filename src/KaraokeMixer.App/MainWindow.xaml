@@ -250,6 +250,67 @@
                                     ValueChanged="EchoMixSlider_ValueChanged" />
                         </StackPanel>
                     </StackPanel>
+
+                    <!-- Reverb -->
+                    <StackPanel Spacing="8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Vang phòng (Reverb)" FontSize="13" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                            <ToggleSwitch x:Name="ReverbToggle" Grid.Column="1"
+                                          OnContent="" OffContent=""
+                                          IsOn="{x:Bind ViewModel.ReverbEnabled, Mode=TwoWay}"
+                                          Toggled="ReverbToggle_Toggled" />
+                        </Grid>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind FormatPercent('Kích thước phòng', ViewModel.ReverbRoomSizePercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="ReverbRoomSizeSlider" Minimum="0" Maximum="100" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.ReverbRoomSizePercent, Mode=TwoWay}"
+                                    ValueChanged="ReverbRoomSizeSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind FormatPercent('Damping', ViewModel.ReverbDampingPercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="ReverbDampingSlider" Minimum="0" Maximum="100" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.ReverbDampingPercent, Mode=TwoWay}"
+                                    ValueChanged="ReverbDampingSlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind FormatPercent('Mix', ViewModel.ReverbMixPercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="ReverbMixSlider" Minimum="0" Maximum="100" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.ReverbMixPercent, Mode=TwoWay}"
+                                    ValueChanged="ReverbMixSlider_ValueChanged" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <!-- Feedback suppression (chống hú) -->
+                    <StackPanel Spacing="8">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Chống hú (Feedback)" FontSize="13" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center" />
+                            <ToggleSwitch x:Name="FeedbackSuppressionToggle" Grid.Column="1"
+                                          OnContent="" OffContent=""
+                                          IsOn="{x:Bind ViewModel.FeedbackSuppressionEnabled, Mode=TwoWay}"
+                                          Toggled="FeedbackSuppressionToggle_Toggled" />
+                        </Grid>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind FormatPercent('Độ nhạy', ViewModel.FeedbackSuppressionSensitivityPercent), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="FeedbackSensitivitySlider" Minimum="0" Maximum="100" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.FeedbackSuppressionSensitivityPercent, Mode=TwoWay}"
+                                    ValueChanged="FeedbackSensitivitySlider_ValueChanged" />
+                        </StackPanel>
+                        <StackPanel Spacing="2">
+                            <TextBlock Text="{x:Bind FormatDb('Độ chặn', ViewModel.FeedbackSuppressionDepthDb), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextPrimaryBrush}" />
+                            <Slider x:Name="FeedbackDepthSlider" Minimum="3" Maximum="30" StepFrequency="1"
+                                    Value="{x:Bind ViewModel.FeedbackSuppressionDepthDb, Mode=TwoWay}"
+                                    ValueChanged="FeedbackDepthSlider_ValueChanged" />
+                        </StackPanel>
+                        <TextBlock Text="{x:Bind FormatNotchCount(ViewModel.FeedbackActiveNotchCount), Mode=OneWay}" FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" />
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
         </Grid>
